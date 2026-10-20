@@ -1,0 +1,16 @@
+# Keep the GitHub repo small and free of raw/visitor-level data.
+# The web app only needs the code, params/, .streamlit/ and the five small data files below (~2 MB).
+
+# data: ignore everything except what app.py needs
+data/*
+!data/arrivals_5min.csv
+!data/tickets_slot.csv
+!data/open_rooms.csv
+!data/closing_times.csv
+!data/lang_by_date.csv
+
+# analysis outputs and Python cache
+output/
+__pycache__/
+*.pyc
+*.pkl
