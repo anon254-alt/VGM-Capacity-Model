@@ -55,7 +55,7 @@ def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--month", required=True); a = ap.parse_args()
     fi = [i for i, (m0, m1) in FILE_MONTHS.items() if m0 <= a.month <= m1][0]
     path = AUDIO[fi]
-    mp = pd.read_csv(os.path.join(ANALYSIS, "station_room_mapping.csv"), encoding="utf-8-sig", dtype=str)
+    mp = pd.read_csv(os.path.join(HERE, "station_room_mapping.csv"), encoding="utf-8-sig", dtype=str)
     zone_of = {k: ZONES.index(z) for k, z in zip(mp.station_name, mp.zone_id)}
     with open(path, encoding="utf-8-sig") as f:
         hdr = f.readline().startswith("Unique_sessie_id")

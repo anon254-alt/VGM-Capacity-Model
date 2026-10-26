@@ -2,7 +2,7 @@
 01_build_room_visits.py - step 1 of the crowding model.
 
 Turns audio-guide stops into ROOM VISITS for a random sample of sessions:
-  - every stop is mapped to a room (../station_room_mapping.csv); unmapped stops are dropped
+  - every stop is mapped to a room (station_room_mapping.csv, in this folder; rebuild with build_station_mapping.py); unmapped stops are dropped
   - consecutive stops in the same room are merged into one visit
   - visit end = start of the next room's first stop; for the last visit
     = min(session end, last stop start + LAST_STOP_MIN)
@@ -31,7 +31,7 @@ def norm(s):
 
 
 def main():
-    mp = pd.read_csv(os.path.join(ANALYSIS, "station_room_mapping.csv"), encoding="utf-8-sig", dtype=str)
+    mp = pd.read_csv(os.path.join(HERE, "station_room_mapping.csv"), encoding="utf-8-sig", dtype=str)
     zone_of = dict(zip(mp.station_name, mp.zone_id))
     parts = []
     for path in sorted(glob.glob(AUDIO_GLOB)):
