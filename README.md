@@ -23,6 +23,9 @@ section "Crowding model approach", and Appendix B.
 | 13 | `13_mix_sensitivity.py` | Does the visitor (language) mix change crowding? Real vs typical month x weekday vs extreme mixes | ~6 min |
 | 14 | `14_build_artworks.py` | People at six famous artworks per 5 min + what visitors do in those rooms (all sessions; run per month from the Analysis folder, after step 8) | ~35 s/month |
 | 15 | `15_artwork_congestion.py` | Famous-artwork congestion vs people in the room; does room crowding change engagement with the artworks? | <1 min |
+| 16 | `16_accuracy_data.py` | Data for the app's accuracy page: measured people per room per 15 min, and the model run on every past day (re-run when the model changes) | ~30 min |
+| 17 | `17_visit_duration_nps.py` | Visit-duration file: audio guide vs no audio guide visit time; NPS vs congestion during each respondent's visit (needs `02_build_arrivals.py --start 2025-09-01 --out arrivals_5min_from2025.csv`) | <1 min |
+| 18 | `18_audio_guide.py` | Audio guide vs no audio guide in the simulation: share per day and hour (`data/ag_share_hour.csv`) and the stay multiplier for visitors without a guide (`params/audio_guide.json`). Then re-run 05, 06, 07, 16 | ~2 min |
 
 Steps 1-2 must run where the raw data is (the Proyecto Ops folder). Shared code: `layout.py` (rooms,
 floors, adjacency - edit if the layout is wrong), `features.py` (logit factors), `sim.py` (simulation).
@@ -52,12 +55,20 @@ without data the model uses that weekday's typical closing time and the typical 
 ## Web app (scenario tool)
 `app.py` is a Streamlit app on top of the simulation: pick a day, set ticket sales (real, scaled, same number per slot,
 or typed / uploaded per slot), close rooms (incl. the exhibition wing), and see expected people per room per 15 minutes
-(heatmap, one chart per room vs baseline, entries) with CSV downloads.
+(heatmap, one chart per room vs baseline, entries) with CSV downloads. A second page, "Accuracy vs history",
+shows how close the model is to measured crowding on average and for any past day.
 
 - Run locally: `pip install -r requirements.txt`, then `streamlit run app.py` from this folder (or double-click
   `Start VGM app.bat` on Windows). It opens at http://localhost:8501. A run takes ~10-40 seconds.
 - Link to a day: `http://localhost:8501/?date=2026-12-04`.
 - Put online: push this folder to GitHub and deploy `app.py` on Streamlit Community Cloud (free) or any server.
   Files the app needs: the .py files, `params/`, `.streamlit/`, and in `data/` only arrivals_5min.csv,
-  tickets_slot.csv, open_rooms.csv, closing_times.csv, lang_by_date.csv (~2 MB). room_visits.csv and the raw data
+  tickets_slot.csv, open_rooms.csv, closing_times.csv, lang_by_date.csv, measured_15min.csv.gz,
+  simulated_15min.csv.gz, measured_days.csv and ag_share_hour.csv (~4 MB; `.gitignore` already keeps everything else out). room_visits.csv and the raw data
   are NOT needed (and should not be uploaded).
+
+## Audio guide correction (27 Oct 2026)
+Visitors without an audio guide spend ~12% less time in the museum (visit-duration file, step 17). Order to rebuild:
+17 (writes `non_ag_time_ratio`) -> 08 per month (crowding measure: weight = 1 + (factor - 1) x ratio) -> 18 (share per
+hour + stay multiplier for non-guide visitors in the simulation) -> 05 (recalibrate) -> 06, 07 -> 16 (app accuracy data).
+Scenario lever: `run_scenario.py --ag-share 0.6`, or "Change audio-guide take-up" in the app.

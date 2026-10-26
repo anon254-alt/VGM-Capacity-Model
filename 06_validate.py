@@ -39,6 +39,11 @@ C_MEAS, C_PRED = "#2a78d6", "#eb6834"
 _ARR_H = None
 
 
+SAMPLE_RATE = 0.1503          # share of audio-guide sessions (3+ rooms) in room_visits.csv (01_build_room_visits.py)
+_pj = os.path.join(os.path.dirname(os.path.abspath(__file__)), "params", "audio_guide.json")
+AG_RATIO = json.load(open(_pj)).get("non_ag_time_ratio", 1.0) if os.path.exists(_pj) else 1.0
+
+
 def load_visits_for_measurement():
     return pd.read_csv(os.path.join(DATA, "room_visits.csv"), parse_dates=["s_start", "t_in", "t_out"],
                        usecols=["sid", "split", "date", "visit_no", "n_visits", "zone", "s_start", "t_in", "t_out"])
@@ -68,6 +73,9 @@ def measured(v, scans, date, min_sessions=5):
     arr = _arrivals_by_hour()
     day_factor = scans[date] / len(sess)
     fac = {h: (arr.get((date, h), 0) / n if n >= min_sessions else day_factor) for h, n in n_h.items()}
+    # each sampled session = 1/SAMPLE_RATE audio-guide visitors + the rest, who spend less time in the rooms
+    # (non_ag_time_ratio, see 08_build_crowding.py)
+    fac = {h: f if f <= 1 / SAMPLE_RATE else 1 / SAMPLE_RATE + (f - 1 / SAMPLE_RATE) * AG_RATIO for h, f in fac.items()}
     w = d.sid.map(sess).map(fac).to_numpy()
     occ = np.zeros((n_slots, N))
     for f in np.unique(w):

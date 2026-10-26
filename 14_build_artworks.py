@@ -100,7 +100,7 @@ def main():
     good = set(v.sid)
     # hourly weights (from 08_build_crowding.py)
     wt = pd.read_csv(os.path.join(HERE, "data", "crowding", f"weights_{a.month}.csv"))
-    fac = wt.set_index(["date", "start_hour"]).factor
+    fac = wt.set_index(["date", "start_hour"])["weight" if "weight" in wt else "factor"]
     sess = v.groupby("sid").agg(date=("date", "first"), h=("s_start", lambda s: s.iloc[0].hour))
     sess["w"] = [fac.get((r.date, r.h), np.nan) for r in sess.itertuples()]
 

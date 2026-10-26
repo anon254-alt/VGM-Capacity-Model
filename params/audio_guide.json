@@ -1,0 +1,6 @@
+{
+ "non_ag_time_ratio": 0.8786,
+ "source_time_ratio": "17_visit_duration_nps.py: audio-guide orders stay +13.8% longer (adjusted), visit-duration file Sep 2025-Apr 2026",
+ "stay_multiplier_non_ag": 0.8003,
+ "source_stay_multiplier": "18_audio_guide.py: simulated non-guide visit = 0.8786 x guide visit"
+}

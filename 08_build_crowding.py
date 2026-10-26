@@ -6,14 +6,17 @@ For one month at a time (laptop memory):
     (same rules as 01_build_room_visits.py)
   - keep sessions with >= 3 room visits
   - scale each session to all visitors by the audio-guide share of its START HOUR that day
-    (scanned visitors in that hour / sessions starting in that hour; days factor if < 5 sessions)
+    (factor = scanned visitors in that hour / sessions starting in that hour; day's factor if < 5 sessions)
+  - visitors WITHOUT an audio guide spend less time in the rooms (visit-duration file: ratio
+    non_ag_time_ratio ~0.88, params/audio_guide.json from 17_visit_duration_nps.py), so a session counts as
+    1 audio-guide visitor + (factor - 1) others weighted by that ratio:  weight = 1 + (factor - 1) x ratio
   - people per room per 5-minute slot = sum over visits of (weight x minutes in the slot / 5)
 Outputs (model/data/crowding/):
   crowding_<YYYY-MM>.csv : date, slot (HH:MM), zone, ag_people (raw audio-guide users), est_people
-  weights_<YYYY-MM>.csv  : date, start_hour, sessions, scans, factor   (to remove a person's own presence)
+  weights_<YYYY-MM>.csv  : date, start_hour, sessions, scans, factor, weight
 Run from the Analysis folder:  python model/08_build_crowding.py --month 2026-08
 """
-import argparse, glob, os, sys, unicodedata
+import argparse, glob, json, os, sys, unicodedata
 import numpy as np
 import pandas as pd
 
@@ -90,9 +93,12 @@ def main():
     cnt = cnt.join(dayf, on="date")
     cnt["factor"] = np.where(cnt.sessions >= MIN_SESS, cnt.scans / cnt.sessions, cnt.dayf)
     out_dir = os.path.join(HERE, "data", "crowding"); os.makedirs(out_dir, exist_ok=True)
+    pj = os.path.join(HERE, "params", "audio_guide.json")
+    ratio = json.load(open(pj)).get("non_ag_time_ratio", 1.0) if os.path.exists(pj) else 1.0
+    cnt["weight"] = 1 + (cnt.factor - 1).clip(lower=0) * ratio
     cnt.drop(columns="dayf").rename(columns={"h": "start_hour"}).to_csv(
         os.path.join(out_dir, f"weights_{a.month}.csv"), index=False)
-    fac = cnt.set_index(["date", "h"]).factor
+    fac = cnt.set_index(["date", "h"]).weight
     sess["w"] = [fac.get((r.date, r.h), np.nan) for r in sess.itertuples()]
     v["w"] = v.sid.map(sess.w)
     v = v.dropna(subset=["w"])

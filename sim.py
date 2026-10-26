@@ -8,6 +8,11 @@ Each simulated visitor:
   4. picks the next room or EXIT with the logit (only open rooms are offered)
   5. repeats until EXIT or closing time
 Language of each visitor is drawn from that day's audio-guide language mix.
+Audio guide: each visitor has an audio guide with the share observed for their arrival hour that day
+(data/ag_share_hour.csv). The stay model is estimated on audio-guide users; visitors WITHOUT a guide stay
+stay_multiplier_non_ag x as long in each room (params/audio_guide.json, calibrated by 18_audio_guide.py so
+that their whole visit is ~12% shorter, as in the visit-duration file). ag_share in simulate_day changes
+the take-up (scenario lever).
 
 Common random numbers: every random draw comes from a stream fixed by (seed, replication), drawn for
 all visitors at every step, so a baseline and a scenario that share arrivals use identical luck.
@@ -61,6 +66,16 @@ class Model:
         cal = json.load(open(cp)) if os.path.exists(cp) else {}
         self.exit_share = cal.get("exit_share_if_closed", {})
         self.continue_shift = cal.get("continue_shift", 0.0)
+        aj = os.path.join(PAR, "audio_guide.json")
+        self.ag = json.load(open(aj)) if os.path.exists(aj) else {}
+        self.stay_mult_non_ag = self.ag.get("stay_multiplier_non_ag", 1.0)
+        ap_ = os.path.join(DATA, "ag_share_hour.csv")
+        if os.path.exists(ap_):
+            sh = pd.read_csv(ap_)
+            self.ag_share = sh.set_index(["date", "hour"]).share
+            self.ag_share_typ = sh.groupby("hour").share.median()
+        else:
+            self.ag_share, self.ag_share_typ = pd.Series(dtype=float), pd.Series(dtype=float)
         lb = pd.read_csv(lp)
         self.lang = lb.pivot(index="date", columns="g", values="n").fillna(0).reindex(columns=range(len(LANG_GROUPS)), fill_value=0)
 
@@ -72,6 +87,17 @@ class Model:
         for z in extra_open:
             o[z] = True
         return o.to_numpy()
+
+
+def ag_share_by_hour(m, date):
+    """Audio-guide share per arrival hour (0-23) for a day: that day's data, else the typical share per hour."""
+    out = np.full(24, 1.0)                               # no data at all -> everyone behaves like a guide user
+    if len(m.ag_share_typ):
+        out[:] = m.ag_share_typ.reindex(range(24)).ffill().bfill().to_numpy()
+    if len(m.ag_share) and date in m.ag_share.index.get_level_values(0):
+        d = m.ag_share.loc[date]
+        out[d.index.to_numpy()] = d.to_numpy()
+    return np.clip(out, 0, 1)
 
 
 def typical_mix(m, date):
@@ -97,14 +123,17 @@ def _first_shares(m, exh_open, clock_h, open_mask):
 
 
 def simulate_day(date, n_reps=100, closed=(), extra_open=(), arrivals_factor=1.0, seed=0, model=None,
-                 arrivals=None, exit_share=None, continue_shift=None, router="logit", lang_mix=None):
+                 arrivals=None, exit_share=None, continue_shift=None, router="logit", lang_mix=None,
+                 ag_share=None):
     """exit_share: {zone: q} - when zone is closed, share q of the visitors who would have chosen it
     leave the museum instead; the rest spread over the open options as in the plain logit.
     router: "logit" (the model) or "counted" (benchmark: P(next room | current room) counted from
     the estimation sample, renormalised over open rooms; no other factors).
     continue_shift: added to the attractiveness of every room vs EXIT (calibrated so simulated
     crowding matches measured crowding on normal days). Defaults: params/calibration.json.
-    lang_mix: shares of the language groups (features.LANG_GROUPS order); default = that day's mix."""
+    lang_mix: shares of the language groups (features.LANG_GROUPS order); default = that day's mix.
+    ag_share: overall audio-guide take-up for the scenario (0-1); default = as observed that day. The hourly
+    pattern is kept and scaled to reach this average."""
     m = model or Model()
     open_mask = m.open_zones(date, closed, extra_open)
     q = dict(m.exit_share) if exit_share is None else dict(exit_share)
@@ -128,6 +157,12 @@ def simulate_day(date, n_reps=100, closed=(), extra_open=(), arrivals_factor=1.0
     n_slots = (DAY_END - DAY_START) // SLOT
     occ = np.zeros((n_reps, n_slots, N))
     durations, n_rooms = [], []
+    share_h = ag_share_by_hour(m, date)
+    p_ag = share_h[(arr_slot // 60).astype(int).clip(0, 23)]
+    base_share = float(p_ag.mean()) if n else 0.0
+    if ag_share is not None and base_share > 0:
+        p_ag = np.clip(p_ag * ag_share / base_share, 0, 1)
+    dur_ag, dur_no = [], []
 
     for rep in range(n_reps):
         rng = np.random.default_rng([seed, rep])
@@ -135,6 +170,8 @@ def simulate_day(date, n_reps=100, closed=(), extra_open=(), arrivals_factor=1.0
         start = t.copy()
         lang = np.searchsorted(np.cumsum(lang_p), rng.random(n)).clip(0, len(LANG_GROUPS) - 1)
         t = t + m.lead[rng.integers(0, len(m.lead), n)]
+        has_ag = np.random.default_rng([seed, rep, 7]).random(n) < p_ag   # own stream: other draws unchanged
+        stay_mult = np.where(has_ag, 1.0, m.stay_mult_non_ag)
         P0 = _first_shares(m, open_mask[ZONE_IDX["EXH"]], t / 60, open_mask)
         cur = (rng.random(n)[:, None] > np.cumsum(P0, 1)).sum(1).clip(0, N - 1)
         seen_z = np.zeros((n, N), bool)
@@ -154,7 +191,7 @@ def simulate_day(date, n_reps=100, closed=(), extra_open=(), arrivals_factor=1.0
             Xs = stay_mod.stay_X(c, lang[idx], clock, (t[idx] - start[idx]) / 60, revisit, np.full(len(idx), friday),
                                  visits[idx] == 0, close_h - clock)
             res = np.array([m.resid[z][r % len(m.resid[z])] for z, r in zip(c, u_res[idx])])
-            stay = np.clip(np.exp(Xs @ m.sbeta + res), m.smin, m.smax)
+            stay = np.clip(np.exp(Xs @ m.sbeta + res), m.smin, m.smax) * stay_mult[idx]
             stay = np.minimum(stay, np.maximum(close_t - t[idx], 0.25))    # nobody stays past closing
             iv_z.append(c); iv_a.append(t[idx]); iv_b.append(t[idx] + stay)
             t[idx] += stay
@@ -195,11 +232,18 @@ def simulate_day(date, n_reps=100, closed=(), extra_open=(), arrivals_factor=1.0
         z = np.concatenate(iv_z); a0 = np.concatenate(iv_a); b0 = np.concatenate(iv_b)
         occ[rep] = occupancy(z, a0, b0, n_slots)
         durations.append(float(np.mean(t - start)))
+        if has_ag.any():
+            dur_ag.append(float(np.mean((t - start)[has_ag])))
+        if (~has_ag).any():
+            dur_no.append(float(np.mean((t - start)[~has_ag])))
         n_rooms.append(float(seen_z.sum(1).mean()))
 
     slots = [f"{(DAY_START + i * SLOT) // 60:02d}:{(DAY_START + i * SLOT) % 60:02d}" for i in range(n_slots)]
     return {"occ": occ, "slots": slots, "zones": ZONES, "open": open_mask, "n_visitors": n,
-            "mean_visit_min": float(np.mean(durations)), "mean_rooms": float(np.mean(n_rooms))}
+            "mean_visit_min": float(np.mean(durations)), "mean_rooms": float(np.mean(n_rooms)),
+            "ag_share": float(p_ag.mean()) if n else 0.0, "ag_share_base": base_share,
+            "mean_visit_ag": float(np.mean(dur_ag)) if dur_ag else float("nan"),
+            "mean_visit_no_ag": float(np.mean(dur_no)) if dur_no else float("nan")}
 
 
 def occupancy(zone, t_in, t_out, n_slots):

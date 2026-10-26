@@ -9,6 +9,7 @@ Examples (from the model folder):
   python run_scenario.py --date 2026-08-14 --tickets-factor 1.10           # sell 10% more tickets in every slot
   python run_scenario.py --date 2026-08-14 --tickets-per-slot 180          # sell 180 tickets in every slot 09:00-16:30
   python run_scenario.py --date 2026-12-04 --tickets-file my_slots.csv     # any date; csv with columns slot,tickets
+  python run_scenario.py --date 2026-08-14 --ag-share 0.6                  # 60% of visitors with an audio guide
 
 Ticket options turn tickets sold per 15-min slot into people entering (arrivals.py: show-up rate and
 arrival times vs the booked slot). Without them the scenario uses that day's real entries.
@@ -48,13 +49,13 @@ def scenario_tickets(date, tickets_factor=None, tickets_per_slot=None, tickets_f
     return None
 
 
-def run(date, close=(), arrivals_factor=1.0, reps=100, capacity=None, seed=0, model=None, tickets=None):
+def run(date, close=(), arrivals_factor=1.0, reps=100, capacity=None, seed=0, model=None, tickets=None, ag_share=None):
     m = model or Model()
     scen_arr = A.to_counts(A.expected(tickets)) if tickets is not None else None
     has_real = not m.arr[m.arr.date == date].empty
     base = simulate_day(date, reps, model=m, seed=seed, arrivals=None if has_real else scen_arr)
     scen = simulate_day(date, reps, closed=close, arrivals_factor=arrivals_factor, model=m, seed=seed,
-                        arrivals=scen_arr)
+                        arrivals=scen_arr, ag_share=ag_share)
     rows = []
     for name, r in (("baseline", base), ("scenario", scen)):
         o = r["occ"]
@@ -89,10 +90,13 @@ def main():
     ap.add_argument("--tickets-factor", type=float, default=None, help="scale the day's real ticket sales")
     ap.add_argument("--tickets-per-slot", type=float, default=None, help="same tickets in every slot 09:00-16:30")
     ap.add_argument("--tickets-file", default=None, help="csv with columns slot (HH:MM), tickets")
+    ap.add_argument("--ag-share", type=float, default=None, help="audio-guide take-up 0-1 (default: as usual)")
     a = ap.parse_args()
     tickets = scenario_tickets(a.date, a.tickets_factor, a.tickets_per_slot, a.tickets_file)
-    occ, summary, base, scen = run(a.date, a.close, a.arrivals_factor, a.reps, a.capacity, a.seed, tickets=tickets)
-    tag = ("" if tickets is None else f"_tickets{int(tickets.tickets.sum())}")
+    occ, summary, base, scen = run(a.date, a.close, a.arrivals_factor, a.reps, a.capacity, a.seed, tickets=tickets,
+                                   ag_share=a.ag_share)
+    tag = ("" if tickets is None else f"_tickets{int(tickets.tickets.sum())}") + \
+          ("" if a.ag_share is None else f"_ag{int(a.ag_share * 100)}")
     name = f"{a.date}_close-{'-'.join(a.close) or 'none'}_x{a.arrivals_factor:g}{tag}"
     out = os.path.join(HERE, "output", "scenarios", name)
     os.makedirs(out, exist_ok=True)

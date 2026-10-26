@@ -1,5 +1,5 @@
 # Keep the GitHub repo small and free of raw/visitor-level data.
-# The web app only needs the code, params/, .streamlit/ and the five small data files below (~2 MB).
+# The web app only needs the code, params/, .streamlit/ and the nine small data files below (~4 MB).
 
 # data: ignore everything except what app.py needs
 data/*
@@ -8,6 +8,10 @@ data/*
 !data/open_rooms.csv
 !data/closing_times.csv
 !data/lang_by_date.csv
+!data/measured_15min.csv.gz
+!data/simulated_15min.csv.gz
+!data/measured_days.csv
+!data/ag_share_hour.csv
 
 # analysis outputs and Python cache
 output/
