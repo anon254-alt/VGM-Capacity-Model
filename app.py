@@ -22,10 +22,83 @@ import streamlit as st
 from layout import ZONES, ROOM_LABEL
 from sim import Model, simulate_day, ag_share_by_hour
 import arrivals as A
+import capacity as CAP
 
 st.set_page_config(page_title="VGM crowding tool", page_icon="🖼️", layout="wide")
 
 from app_common import *  # noqa: F401,F403  (helpers, colours, cached model and simulation)
+
+
+# ---------- capacity-check charts
+DIVERGING = [[0.0, "#184f95"], [0.25, "#6da7ec"], [0.45, "#cde2fb"], [0.5, "#f0efec"],
+             [0.55, "#f7cfcd"], [0.75, "#e34948"], [1.0, "#a3262a"]]       # blue (below) - grey (at limit) - red (above)
+
+
+def cap_map(occ, lim, slots, closed):
+    pct = occ / lim.to_numpy()[None, :] * 100
+    pct[:, [ZONES.index(z) for z in closed]] = np.nan
+    f = go.Figure(go.Heatmap(
+        z=pct.T, x=slots, y=[ROOM_LABEL[z] + (" (closed)" if z in closed else "") for z in ZONES],
+        zmin=50, zmax=150, zmid=100, colorscale=DIVERGING, xgap=1, ygap=2,
+        customdata=np.dstack([occ.T, np.repeat(lim.to_numpy()[:, None], len(slots), 1)]),
+        colorbar=dict(title=dict(text="% of limit", side="right"), thickness=12, tickvals=[50, 75, 100, 125, 150],
+                      ticktext=["50%", "75%", "100% = limit", "125%", "150%+"]),
+        hovertemplate="%{y}<br>%{x}: <b>%{customdata[0]:.0f} people</b> (limit %{customdata[1]:.0f}, %{z:.0f}%)<extra></extra>"))
+    f.update_layout(height=470, margin=dict(l=10, r=10, t=10, b=10), yaxis=dict(autorange="reversed"),
+                    xaxis=dict(dtick=4, tickangle=0))
+    return f
+
+
+def cap_bars(base_ex, scen_ex, allow, closed, blue, grey, names=("Baseline", "Scenario")):
+    """Person-hours over the limit per room: today vs scenario, with each room's allowance as a red tick."""
+    rooms = [z for z in ZONES if z not in closed]
+    idx = [ZONES.index(z) for z in rooms]
+    labels = [ROOM_LABEL[z] for z in rooms]
+    over = [scen_ex[i] > allow[i] for i in idx]
+    f = go.Figure()
+    f.add_trace(go.Bar(y=labels, x=[base_ex[i] for i in idx], name=names[0], orientation="h", marker_color=grey,
+                       hovertemplate="%{y}<br>" + names[0] + ": %{x:.1f} person-hours over<extra></extra>"))
+    f.add_trace(go.Bar(y=labels, x=[scen_ex[i] for i in idx], name=names[1], orientation="h", marker_color=blue,
+                       text=[f"{scen_ex[i] - allow[i]:+.1f} over allowed" if o else "" for i, o in zip(idx, over)],
+                       textposition="outside", textfont=dict(color=CRIT, size=12), cliponaxis=False,
+                       hovertemplate="%{y}<br>" + names[1] + ": %{x:.1f} person-hours over<extra></extra>"))
+    f.add_trace(go.Scatter(y=labels, x=[allow[i] for i in idx], mode="markers", name="Allowed",
+                           marker=dict(symbol="line-ns", size=22, line=dict(width=3, color=CRIT)),
+                           hovertemplate="%{y}<br>Allowed: %{x:.1f} person-hours<extra></extra>"))
+    xmax = max(max(base_ex[i] for i in idx), max(scen_ex[i] for i in idx), max(allow[i] for i in idx)) * 1.35
+    f.update_layout(barmode="group", bargap=0.25, bargroupgap=0.08, height=470, margin=dict(l=10, r=30, t=40, b=10),
+                    yaxis=dict(autorange="reversed"), legend=dict(orientation="h", y=1.1),
+                    xaxis=dict(title="person-hours over the room's limit (1 = one person over for one hour)",
+                               range=[0, xmax]))
+    return f
+
+
+def cap_line(slots, scen, base, limit, title, blue, grey, names=("Baseline", "Scenario"), margin=0.0):
+    f = go.Figure()
+    above = np.where(scen > limit, scen, limit)
+    f.add_trace(go.Scatter(x=slots, y=[limit] * len(slots), mode="lines", line=dict(width=0), hoverinfo="skip",
+                           showlegend=False))
+    f.add_trace(go.Scatter(x=slots, y=above, mode="lines", line=dict(width=0), fill="tonexty",
+                           fillcolor="rgba(208,59,59,0.18)", hoverinfo="skip", name=names[1] + " above the limit"))
+    f.add_trace(go.Scatter(x=slots, y=base, name=names[0], line=dict(color=grey, width=2, dash="dot"),
+                           hovertemplate=names[0] + " %{x}: %{y:.0f}<extra></extra>"))
+    f.add_trace(go.Scatter(x=slots, y=scen, name=names[1], line=dict(color=blue, width=2),
+                           hovertemplate=names[1] + " %{x}: %{y:.0f}<extra></extra>"))
+    f.add_hline(y=limit, line=dict(color=CRIT, width=1.5, dash="dash"),
+                annotation_text=f"limit {limit:.0f}", annotation_position="top left", annotation_font_color=CRIT)
+    if margin:
+        f.add_hline(y=limit * (1 + margin), line=dict(color=CRIT, width=1, dash="dot"),
+                    annotation_text=f"limit + {margin:.0%} margin ({limit * (1 + margin):.0f})",
+                    annotation_position="top right", annotation_font_color=CRIT)
+    f.update_layout(title=dict(text=title, font=dict(size=13)), height=470, margin=dict(l=10, r=10, t=40, b=10),
+                    hovermode="x unified", legend=dict(orientation="h", y=-0.12), xaxis=dict(dtick=4, tickangle=0),
+                    yaxis=dict(title="people", rangemode="tozero"))
+    return f
+
+
+@st.cache_data
+def cached_limits(pct):
+    return CAP.limits(pct)
 
 
 def scenario_page():
@@ -166,7 +239,8 @@ def scenario_page():
     grid = "#383835" if dark else "#e4e3df"
     open_now = [z for z in ZONES if z not in closed]
 
-    tab1, tab2, tab3, tab4 = st.tabs(["All rooms (heatmap)", "Room by room", "Entries", "Table & downloads"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["All rooms (heatmap)", "Room by room", "Entries", "Table & downloads",
+                                            "Capacity check"])
 
     # ---------- heatmap: rooms x time, people (scenario)
     with tab1:
@@ -272,6 +346,142 @@ def scenario_page():
                  scen_arr.assign(kind="entries_per_5min").rename(columns={"visitors": "value"})]).to_csv(index=False),
                 f"tickets_entries_{tag}.csv", "text/csv")
 
+    # ---------- capacity check: keep crowding no worse than today's sold-out days
+    with tab5:
+        st.markdown("**Is this scenario more crowded than today's normal full day?** Each room's limit is how busy "
+                    "it gets on today's sold-out days (a high percentile of its 15-minute crowding, 10:00–17:00). "
+                    "What counts is **how far** a room goes over its limit, in person-hours: one person over for an "
+                    "hour = 1, thirty people over for an hour = 30. The scenario passes if no open room goes further over "
+                    "than today, allowing the margin you choose below. Rooms can't offset each other.")
+        c1, c2 = st.columns([1, 2])
+        pct = c1.radio("Limit = percentile of today's sold-out days", [75, 90, 95], index=1, horizontal=True,
+                       format_func=lambda p: f"P{p}", key="cap_pct")
+        lim, n_days = cached_limits(pct / 100)
+        c2.caption(f"P{pct}: the room is busier than on {100 - pct}% of the moments (10:00–17:00) of {n_days} "
+                   "sold-out days in 2026, as simulated by the model. Model is compared with model, so the model's "
+                   "tendency to under-estimate peaks cancels out.")
+        t1, t2 = st.columns([1, 2])
+        tol = t1.slider("Margin: how much busier than today is OK", 0, 30, 0, 1, format="+%d%%", key="cap_tol",
+                        help="0% = no worse than today. 10% = the scenario's busiest moments may be up to 10% busier "
+                             "than today's busy level.") / 100
+        t2.caption(f"The scenario is measured against each room's limit {'raised by ' + format(tol, '.0%') if tol else 'as is'}; "
+                   "it passes if no room goes further over than today, plus 1 person-hour of slack (one person over "
+                   "for an hour). Used by both the check and the ticket search below.")
+        open_mask = np.array([z not in closed for z in ZONES])
+        eb, es = CAP.excess(B_mean, lim), CAP.excess(S_mean, lim, tol)
+        allow = CAP.allowance(eb)
+        ok = CAP.acceptable(es, eb, open_mask)
+        worst = int(np.argmax(np.where(open_mask, es - allow, -1e9)))
+        if ok:
+            st.success("Passes: no open room goes further over its limit than today" +
+                       (f" (with a {tol:.0%} margin)." if tol else "."))
+        else:
+            st.error(f"Over today's level: {ROOM_LABEL[ZONES[worst]]} has {es[worst]:.1f} person-hours over its limit "
+                     f"({lim.iloc[worst] * (1 + tol):.0f} people{' incl. margin' if tol else ''}) vs {allow[worst]:.1f} "
+                     f"allowed (today {eb[worst]:.1f} + 1).")
+        st.plotly_chart(cap_map(S_mean, lim, slots, closed), use_container_width=True, theme="streamlit", key="cap_map", config={"displayModeBar": False})
+        st.caption("Scenario crowding as % of each room's limit. Blue = room below its limit, red = above it.")
+        g1, g2 = st.columns(2)
+        g1.plotly_chart(cap_bars(eb, es, allow, closed, blue, grey), use_container_width=True, theme="streamlit", key="cap_bars", config={"displayModeBar": False})
+        g1.caption("How far each room goes over its limit over the day. Red tick = allowed amount; red label = over it.")
+        open_rooms = [z for z in ZONES if z not in closed]
+        pick = g2.selectbox("Room", open_rooms, index=open_rooms.index(ZONES[worst]) if ZONES[worst] in open_rooms else 0,
+                            format_func=lambda z: ROOM_LABEL[z], key="cap_room")
+        zi = ZONES.index(pick)
+        g2.plotly_chart(cap_line(slots, S_mean[:, zi], B_mean[:, zi], float(lim.iloc[zi]), ROOM_LABEL[pick], blue, grey, margin=tol),
+                        use_container_width=True, theme="streamlit", key="cap_line", config={"displayModeBar": False})
+        with st.expander("Table"):
+            ctab = pd.DataFrame({"Room": [ROOM_LABEL[z] + (" (closed)" if z in closed else "") for z in ZONES],
+                                 "Limit (people)": lim.to_numpy(),
+                                 "Today: person-hours over": eb, "Scenario: person-hours over": es,
+                                 "Allowed": allow, "Pass": np.where(~open_mask, "closed", np.where(es <= allow, "yes", "no")),
+                                 "Scenario: minutes above": CAP.minutes_above(S_mean, lim),
+                                 "Scenario peak": S_mean.max(0), "Baseline peak": B_mean.max(0)})
+            st.dataframe(ctab, hide_index=True, use_container_width=True, height=36 * 14 + 3, column_config={
+                "Limit (people)": st.column_config.NumberColumn(format="%.0f"),
+                "Today: person-hours over": st.column_config.NumberColumn(format="%.1f"),
+                "Scenario: person-hours over": st.column_config.NumberColumn(format="%.1f"),
+                "Allowed": st.column_config.NumberColumn(format="%.1f"),
+                "Scenario peak": st.column_config.NumberColumn(format="%.0f"),
+                "Baseline peak": st.column_config.NumberColumn(format="%.0f")})
+
+        st.markdown("**How many tickets keep this scenario at today's level?**")
+        s1, s2, s3 = st.columns([1.3, 1, 1])
+        where = s1.radio("Change tickets in", ["all slots", "only some slots"], horizontal=True, key="cap_where")
+        window = None
+        if where == "only some slots":
+            all_slots = [f"{h:02d}:{mm:02d}" for h in range(9, 22) for mm in (0, 15, 30, 45)]
+            window = (s2.selectbox("From", all_slots, index=all_slots.index("09:30"), key="cap_from"),
+                      s3.selectbox("To", all_slots, index=all_slots.index("12:00"), key="cap_to"))
+        base_t = real_t[["slot", "tickets"] + (["channel"] if "channel" in real_t else [])]
+        scen_t = base_t if tickets is None else tickets
+        solve_key = (key, pct, where, window, tol)
+        if st.button("Find the ticket level", help="Runs the model ~8 times with 10 runs each (about 1 minute)."):
+            SOLVER_REPS = 10
+            prog = st.progress(0.0, text="Simulating…")
+            calls = {"n": 0}
+            occs = {}
+            base_arr_csv = A.to_counts(A.expected(base_t)).to_csv(index=False)
+            b10 = run_sim(date, SOLVER_REPS, tuple(closed_default) if has_real else (), (), base_arr_csv, 0)
+            keep10 = [i for i, sl in enumerate(b10["slots"]) if SLOT_RANGE[0] <= sl <= SLOT_RANGE[1]]
+            base_min10 = CAP.excess(b10["mean"][keep10], lim)
+
+            def run_f(f):
+                calls["n"] += 1
+                prog.progress(min(calls["n"] / 9, 1.0), text=f"Trying {f:.0%} of the scenario's tickets…")
+                arr = A.to_counts(A.expected(CAP.scale_tickets(scen_t, f, window))).to_csv(index=False)
+                r = run_sim(date, SOLVER_REPS, tuple(sorted(closed)), tuple(extra_open), arr, 0, ag_share)
+                occs[f] = r["mean"][keep10]
+                return CAP.excess(r["mean"][keep10], lim, tol)
+
+            f_best, m_best, trace = CAP.solve(run_f, base_min10, open_mask)
+            prog.empty()
+            st.session_state["cap_result"] = (solve_key, f_best, m_best, base_min10, trace,
+                                              b10["mean"][keep10], occs.get(f_best), [b10["slots"][i] for i in keep10])
+        res = st.session_state.get("cap_result")
+        if res and res[0] == solve_key:
+            _, f_best, m_best, base_min10, trace, b_occ, f_occ, slots10 = res
+            tot = scen_t.tickets.sum()
+            sel = np.ones(len(scen_t), bool) if window is None else \
+                ((scen_t.slot >= window[0]) & (scen_t.slot <= window[1])).to_numpy()
+            part = scen_t.tickets[sel].sum()
+            scope = "every slot" if window is None else f"slots {window[0]}–{window[1]}"
+            if f_best is None:
+                st.error(f"Even at 50% of the tickets in {scope}, some room stays above today's level. "
+                         "Try changing tickets in all slots, or a different window.")
+            else:
+                change = (f_best - 1) * part
+                st.metric("Tickets that keep crowding at today's level", f"{tot + change:,.0f}",
+                          f"{change:+,.0f} tickets ({f_best - 1:+.0%} in {scope})", delta_color="off")
+                if f_best >= 1.3:
+                    msg = f"VGM could sell at least {f_best:.0%} of the scenario's tickets in {scope} (the top of the range searched)."
+                elif f_best >= 1:
+                    msg = f"VGM could sell up to {f_best:.0%} of the scenario's tickets in {scope}."
+                else:
+                    msg = f"VGM would need to cut tickets in {scope} to {f_best:.0%} of the scenario's level."
+                allow10 = CAP.allowance(base_min10)
+                slack = np.where(open_mask, m_best / allow10, -1e9)
+                b_i = int(np.argmax(slack))
+                limiting = (f" The room that limits it: {ROOM_LABEL[ZONES[b_i]]} ({m_best[b_i]:.1f} person-hours over its "
+                            f"limit vs {allow10[b_i]:.1f} allowed; today {base_min10[b_i]:.1f}).") if m_best[b_i] > 0 else ""
+                st.caption(msg + limiting + " Search accuracy: about ±3%.")
+                if f_occ is not None:
+                    lab = (f"Baseline (today)", f"Scenario at {f_best:.0%} of tickets")
+                    act = (b_occ.sum(1) + f_occ.sum(1)) > 0.5
+                    l0, l1 = int(np.argmax(act)), len(act) - int(np.argmax(act[::-1]))
+                    sl = slots10[l0:l1]
+                    h1, h2 = st.columns(2)
+                    h1.plotly_chart(cap_bars(base_min10, m_best, allow10, closed, blue, grey, lab), use_container_width=True,
+                                    theme="streamlit", key="cap_bars_f", config={"displayModeBar": False})
+                    h1.caption("At the ticket level found, no room goes further over its limit than today"
+                               + (f" (with a {tol:.0%} margin)." if tol else "."))
+                    h2.plotly_chart(cap_line(sl, f_occ[l0:l1, b_i], b_occ[l0:l1, b_i], float(lim.iloc[b_i]),
+                                             f"{ROOM_LABEL[ZONES[b_i]]} (the limiting room)", blue, grey, lab, margin=tol),
+                                    use_container_width=True, theme="streamlit", key="cap_line_f", config={"displayModeBar": False})
+                    tr = sorted(trace)
+                    st.caption("Ticket levels tried: " + ", ".join(f"{f:.0%} {'✓' if ok_ else '✗'}" for f, ok_ in tr) +
+                               " (✓ = every room within the allowed level).")
+
     with st.expander("How to read this / assumptions"):
         st.markdown("""
     - **People per room** are averages over each 15-minute slot, from simulated visitors (the logit decides the next room
@@ -285,6 +495,10 @@ def scenario_page():
       stay +14% after controls). Part of that gap is probably who chooses a guide, so take-up changes are an upper bound.
     - **Closing a room:** visitors who would have gone there pick among the open rooms; for the exhibition wing 14% leave
       instead (calibrated on the Feb and Sep 2026 closures).
+    - **Capacity check:** assumes today's sold-out days are VGM's acceptable level of crowding. Each room's limit is a
+      percentile (P75/P90/P95) of its simulated 15-minute crowding on those days. Crowding over the limit is measured in
+      person-hours (how many people over, for how long); a scenario passes if no open room goes further over than today
+      (+1 person-hour of slack), optionally allowing a margin (the scenario may be up to X% busier than today's level). The ticket search scales tickets until that holds (10 runs per try, ±3%).
     - **Not in the model:** crowding effects on behaviour (tested: none in VGM's normal range, so far more tickets than
       today is extrapolation), weather (+2–3% visit time when it rains), groups and guided tours.
     """)

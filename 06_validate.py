@@ -39,7 +39,8 @@ C_MEAS, C_PRED = "#2a78d6", "#eb6834"
 _ARR_H = None
 
 
-SAMPLE_RATE = 0.1503          # share of audio-guide sessions (3+ rooms) in room_visits.csv (01_build_room_visits.py)
+SAMPLE_RATE = 0.1365          # share of audio-guide sessions (3+ rooms) in room_visits.csv (01_build_room_visits.py)
+                              # v1.4 listened rule: 0.1503 x 62,648 / 68,967 sessions with 3+ rooms (was 0.1503)
 _pj = os.path.join(os.path.dirname(os.path.abspath(__file__)), "params", "audio_guide.json")
 AG_RATIO = json.load(open(_pj)).get("non_ag_time_ratio", 1.0) if os.path.exists(_pj) else 1.0
 

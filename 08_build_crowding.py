@@ -14,7 +14,11 @@ For one month at a time (laptop memory):
 Outputs (model/data/crowding/):
   crowding_<YYYY-MM>.csv : date, slot (HH:MM), zone, ag_people (raw audio-guide users), est_people
   weights_<YYYY-MM>.csv  : date, start_hour, sessions, scans, factor, weight
-Run from the Analysis folder:  python model/08_build_crowding.py --month 2026-08
+Data source (v1.4, 16 Nov 2026): the labeled audio-tour file with the same "listened" rule as step 01 (drop
+"Selected Only" stops; drop Unresolved stops except in the exhibition wing). Read from monthly extracts in
+Analysis/Audiotour data - labeled/listened_by_month/ (built from the labeled file in 12 byte-range passes).
+  --raw   original raw export, all stops (v1.0-v1.3)
+Run:  python 08_build_crowding.py --month 2026-08
 """
 import argparse, glob, json, os, sys, unicodedata
 import numpy as np
@@ -29,6 +33,7 @@ COLS = ["Unique_sessie_id", "serverDate", "sessie_start", "sessie_end", "chosen_
 ZONES = ["R01", "R02", "R03", "R04", "R05", "R06", "R07", "R08", "R09", "R10", "R11", "R12", "EXH"]
 SLOT, DAY0, DAY1 = 5, 8 * 60, 23 * 60
 LAST_STOP_MIN, MIN_VISITS, MIN_SESS = 10, 3, 5
+LISTENED = os.path.join(ANALYSIS, "Audiotour data - labeled", "listened_by_month")
 FILE_MONTHS = {0: ("2026-02", "2026-04"), 1: ("2026-05", "2026-07"), 2: ("2026-08", "2026-09")}
 
 
@@ -52,16 +57,24 @@ def occupancy(zone, a, b, w, n_slots):
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument("--month", required=True); a = ap.parse_args()
-    fi = [i for i, (m0, m1) in FILE_MONTHS.items() if m0 <= a.month <= m1][0]
-    path = AUDIO[fi]
+    ap = argparse.ArgumentParser(); ap.add_argument("--month", required=True)
+    ap.add_argument("--raw", action="store_true", help="original raw export, all stops"); a = ap.parse_args()
     mp = pd.read_csv(os.path.join(HERE, "station_room_mapping.csv"), encoding="utf-8-sig", dtype=str)
     zone_of = {k: ZONES.index(z) for k, z in zip(mp.station_name, mp.zone_id)}
-    with open(path, encoding="utf-8-sig") as f:
-        hdr = f.readline().startswith("Unique_sessie_id")
     parts = []
-    for c in pd.read_csv(path, sep=";", encoding="utf-8-sig", header=0 if hdr else None, names=None if hdr else COLS,
-                         usecols=[0, 1, 2, 3, 5, 8], dtype=str, chunksize=1_000_000):
+    if a.raw:
+        fi = [i for i, (m0, m1) in FILE_MONTHS.items() if m0 <= a.month <= m1][0]
+        path = AUDIO[fi]
+        with open(path, encoding="utf-8-sig") as f:
+            hdr = f.readline().startswith("Unique_sessie_id")
+        chunks = pd.read_csv(path, sep=";", encoding="utf-8-sig", header=0 if hdr else None, names=None if hdr else COLS,
+                             usecols=[0, 1, 2, 3, 5, 8], dtype=str, chunksize=1_000_000)
+    else:
+        files = sorted(glob.glob(os.path.join(LISTENED, f"listened_{a.month}_p*.csv.gz")))
+        if not files:
+            sys.exit(f"no extracts for {a.month} in {LISTENED}")
+        chunks = (pd.read_csv(f, dtype=str) for f in files)
+    for c in chunks:
         c.columns = ["sid", "date", "s_start", "s_end", "station", "t"]
         c = c[c.date.str.startswith(a.month)].drop_duplicates()
         c["zone"] = c.station.map(lambda x: zone_of.get(norm(x), -1))
