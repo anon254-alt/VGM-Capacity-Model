@@ -27,6 +27,29 @@ def dark_mode():
         return False
 
 
+def _data_version():
+    """Modification times of the model parameters and data files the app reads."""
+    import glob
+    here = os.path.dirname(os.path.abspath(__file__))
+    files = sorted(glob.glob(os.path.join(here, "params", "*")) + glob.glob(os.path.join(here, "data", "*.csv*")))
+    return tuple((f, os.path.getmtime(f)) for f in files)
+
+
+@st.cache_resource
+def _version_holder():
+    return {"v": None}
+
+
+def refresh_if_data_changed():
+    """Clear the app's caches when params/ or data/ changed since they were loaded (e.g. a new model version),
+    so a running app never mixes old and new files. Called at the top of every page run."""
+    v = _data_version()
+    if _version_holder()["v"] not in (None, v):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+    _version_holder()["v"] = v
+
+
 @st.cache_resource
 def get_model():
     return Model()

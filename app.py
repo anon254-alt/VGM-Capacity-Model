@@ -506,6 +506,7 @@ def scenario_page():
 
 from accuracy_page import accuracy_page  # noqa: E402
 
+refresh_if_data_changed()
 pg = st.navigation([st.Page(scenario_page, title="Scenarios", icon=":material/tune:", default=True),
                     st.Page(accuracy_page, title="Accuracy vs history", icon=":material/fact_check:")])
 pg.run()
